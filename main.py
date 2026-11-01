@@ -18,7 +18,7 @@ from faster_whisper import WhisperModel
 # ---------------- settings ----------------
 SAMPLE_RATE = 16000
 BLOCK_SEC = 0.05
-SPEECH_THRESHOLD = 0.006     # raise if noise triggers it, lower if it misses you
+SPEECH_THRESHOLD = 0.1     # raise if noise triggers it, lower if it misses you
 SILENCE_END_SEC = 0.8        # pause that ends a sentence
 PARTIAL_EVERY_SEC = 0.4      # how often live words are checked
 TRIM_AFTER_SEC = 8
