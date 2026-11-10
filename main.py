@@ -95,6 +95,82 @@ DESCRIPTIONS = {
     "explosion": "an explosion, a huge disaster, everything blowing up, a massive drop",
 }
 
+# ---------- auto-download extra sounds from myinstants.com ----------
+# Missing files are downloaded into the sfx folder on startup. Set AUTO_DOWNLOAD = False
+# once you have them. Format:  filename: (search words, description for d1)
+# If a downloaded sound is the wrong one: delete the file, change its search words, restart.
+AUTO_DOWNLOAD = True
+SOUNDS = {
+    # rizz / flirting
+    "ayo": ("ayo", "a suggestive or flirty line, something spicy, an innuendo"),
+    "smooth_operator": ("smooth operator", "smooth talking, a confident flirt, charming someone"),
+    "rizz": ("rizz sound effect", "good rizz, a smooth pickup line, impressive charisma"),
+    "baby_gronk_rizz": ("little rizzler", "someone with unspoken rizz, effortless charm"),
+    "bad_to_the_bone": ("bad to the bone", "acting tough or cool, a confident entrance, swagger"),
+    "romantic_sax": ("sexy sax", "a romantic moment, flirting, a love scene, getting cozy"),
+    "womp_womp": ("womp womp", "a failed pickup line, getting rejected, a flirt that flopped"),
+    "awkward_cough": ("awkward cough", "an awkward moment, a cringe line, an uncomfortable pause"),
+    # reactions
+    "mission_failed": ("mission failed we'll get em next time", "a failed attempt, losing, trying and failing"),
+    "directed_by_robert": ("directed by robert b weide", "an awkward or cringe situation, a comedic fail"),
+    "run_vine": ("run vine", "running away, escaping a situation"),
+    "huh_cat": ("huh cat", "confusion, not understanding, a weird or confusing statement"),
+    "what_the_dog_doing": ("what the dog doing", "something weird or confusing, a random strange moment"),
+    "reverse_card": ("uno reverse card", "turning the tables, a comeback, flipping an argument back"),
+    "goofy_ahh": ("goofy ahh sound", "a goofy mistake, something silly or clumsy"),
+    "sigma": ("sigma male theme", "acting cool or alone, a sigma moment, grindset talk"),
+    "skibidi": ("skibidi toilet", "brainrot, nonsense, random internet slang"),
+    "chill_guy": ("chill guy", "staying calm, not caring, a relaxed attitude"),
+    "pardon": ("pardon", "being asked to repeat something, confusion, not hearing"),
+    "bell_ding_ding": ("boxing bell", "starting a fight, an argument beginning, round one"),
+    "sparta_kick": ("this is sparta", "yelling, an epic dramatic moment, kicking something away"),
+    "minecraft_oof": ("minecraft oof", "getting hurt, a small mistake, taking damage"),
+    "roblox_death": ("roblox death sound", "dying, failing, a game-over style moment"),
+    "nokia_ringtone": ("nokia ringtone", "a phone call, being called, an interruption"),
+    "mario_coin": ("mario coin", "getting a point, a small win, money, collecting something"),
+    "wrong_buzzer_family_feud": ("family feud strike", "a wrong answer, an incorrect guess"),
+    "ba_dum_tss": ("ba dum tss", "a joke or punchline, a pun, a dad joke"),
+    "sad_cricket_violin": ("sad violin meme", "self-pity, a sob story, sadness"),
+    "anime_wow": ("anime wow", "amazement, a surprising reveal, being impressed"),
+    "nani": ("nani", "shock, disbelief, being surprised by something"),
+    "ara_ara": ("ara ara", "teasing, a flirty or playful comment"),
+}
+
+# descriptions for these sounds (anything you wrote by hand in DESCRIPTIONS wins)
+for _n, (_q, _d) in SOUNDS.items():
+    DESCRIPTIONS.setdefault(_n, _d)
+
+
+def download_missing():
+    import urllib.parse
+    os.makedirs(SFX_DIR, exist_ok=True)
+    have = {os.path.splitext(f)[0] for f in os.listdir(SFX_DIR)}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    for name, (query, _) in SOUNDS.items():
+        if name in have:
+            continue
+        try:
+            url = "https://www.myinstants.com/en/search/?name=" + urllib.parse.quote_plus(query)
+            page = requests.get(url, headers=headers, timeout=30)
+            page.raise_for_status()
+            m = re.search(r"play\('(/media/sounds/[^']+)'", page.text)
+            if not m:
+                raise RuntimeError("no search result")
+            sound_url = "https://www.myinstants.com" + m.group(1)
+            ext = os.path.splitext(sound_url)[1] or ".mp3"
+            audio = requests.get(sound_url, headers=headers, timeout=30)
+            audio.raise_for_status()
+            with open(os.path.join(SFX_DIR, name + ext), "wb") as f:
+                f.write(audio.content)
+            print(f"downloaded {name}{ext}")
+        except Exception as e:
+            print(f"  (could not download {name}: {e})")
+        time.sleep(1.0)
+
+
+if AUTO_DOWNLOAD:
+    download_missing()
+
 HALLUCINATIONS = {"thank you", "thanks for watching", "see you next time",
                   "and ill see you next time", "bye", "you"}
 # ------------------------------------------
