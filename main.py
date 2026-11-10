@@ -14,6 +14,10 @@ import numpy as np
 import requests
 import sounddevice as sd
 from faster_whisper import WhisperModel
+try:
+    from faster_whisper.vad import get_speech_timestamps, VadOptions
+except Exception:
+    get_speech_timestamps = VadOptions = None
 
 # ---------------- settings ----------------
 SAMPLE_RATE = 16000
@@ -23,8 +27,8 @@ SILENCE_END_SEC = 0.8        # pause that ends a sentence
 PARTIAL_EVERY_SEC = 0.4      # how often live words are checked
 TRIM_AFTER_SEC = 8
 MAX_UTTERANCE_SEC = 60
-PREROLL_SEC = 0.4
-LANGUAGE = "en"              # "en", "fr", "ar", or None for auto
+PREROLL_SEC = 0.6
+LANGUAGE = None             # "en", "fr", "ar", or None for auto
 MODEL_SIZE = "large-v3-turbo"   # use "medium" or "small" if d1 is slow / GPU is full
 PROMPT = "Casual conversation, slang, memes, school, exams."
 
@@ -42,8 +46,19 @@ BARGE_IN_THRESHOLD = 0.02    # voice level that stops a sound (higher than SPEEC
 BARGE_IN_BLOCKS = 4          # how many 50 ms blocks in a row (~0.2 s)
 MIN_PLAY_SEC = 2.0           # a sound always plays at least this long before you can interrupt it
 
+# --- loud-place settings: only react to someone actually talking ---
+USE_VAD = True               # voice detector (Silero): ignores music, crowd noise, machines
+VAD_THRESHOLD = 0.6          # 0-1. Raise (0.7-0.85) if noise still triggers it, lower if it misses you
+VAD_MIN_SPEECH_MS = 150      # a sound must look like speech for this long to count
+NOISE_MARGIN = 1.6           # you must be this many times louder than the background level
+NOISE_ADAPT = 0.02           # how fast the background level is learned (0.005 slow ... 0.05 fast)
+MIN_WORDS = 2                # ignore utterances with fewer words than this (1 = allow "bruh")
+MIN_AVG_LOGPROB = -1.0       # drop Whisper text it isn't confident about (-0.6 = stricter)
+SHOW_LEVELS = False          # True: print your level vs the background, to help you tune
+
 DESCRIPTIONS = {
     # failure / bad news
+    "say_wallahi_bro": "say walahi bro, see you later",
     "noo_la_policia" : "six seven, brainrot, triple t, tung tung tung sahur",
     "oof": "failure, bad news, getting hurt, bad grade, failing an exam, something going wrong",
     "sad_trombone": "a small fail, disappointment, plans falling apart, wah wah",
@@ -90,7 +105,7 @@ DESCRIPTIONS = {
     "bonk": "punishing someone for a silly idea, stop being silly, going to meme jail",
     "yeet": "throwing something, getting rid of something, an energetic launch",
     "cash_register": "money, getting paid, buying something, a high price, being rich or broke",
-    "windows_xp_shutdown": "leaving, going to sleep, saying goodbye, ending the day",
+    "windows_xp_shutdown": "ending the day",
     "why_are_you_running": "running away, escaping, being in a hurry, avoiding something",
     "explosion": "an explosion, a huge disaster, everything blowing up, a massive drop",
 }
@@ -318,14 +333,14 @@ except Exception as e:
 def get_words(audio, beam):
     segments, _ = model.transcribe(
         audio, language=LANGUAGE, beam_size=beam, temperature=0.0,
-        vad_filter=True, vad_parameters=dict(min_silence_duration_ms=300),
+        vad_filter=True, vad_parameters=dict(threshold=VAD_THRESHOLD, min_silence_duration_ms=300),
         condition_on_previous_text=False,
         word_timestamps=True, initial_prompt=PROMPT,
         no_speech_threshold=0.6,
     )
     words = []
     for s in segments:
-        if s.no_speech_prob > 0.6:
+        if s.no_speech_prob > 0.6 or s.avg_logprob < MIN_AVG_LOGPROB:
             continue
         if re.sub(r"[^\w ]", "", s.text.lower()).strip() in HALLUCINATIONS:
             continue
@@ -354,6 +369,47 @@ def callback(indata, frames, time_info, status):
     q.put(indata[:, 0].copy())
 
 
+# ---------- "is someone talking?" (ignores noise in loud places) ----------
+VAD_WINDOW_SEC = 0.8         # how much recent audio the voice detector looks at
+VAD_TAIL_SEC = 0.2           # speech must reach the very end of that window (= talking right now)
+recent = deque(maxlen=int(VAD_WINDOW_SEC / BLOCK_SEC))
+noise_floor = None           # running estimate of the background level
+vad_ok = bool(USE_VAD and get_speech_timestamps)
+if USE_VAD and not vad_ok:
+    print("(voice detector not available in this faster-whisper version - using loudness only)")
+vad_opts = VadOptions(threshold=VAD_THRESHOLD, min_speech_duration_ms=VAD_MIN_SPEECH_MS,
+                      min_silence_duration_ms=100, speech_pad_ms=0) if vad_ok else None
+
+
+def analyse(block, learn):
+    """Returns (voice_detected, recent_level, background_level) for this block."""
+    global noise_floor, vad_ok
+    recent.append(block)
+    rms = float(np.sqrt(np.mean(block ** 2)))
+    if noise_floor is None:
+        noise_floor = rms
+
+    active = True                                  # without the detector: loudness only
+    if vad_ok:
+        if len(recent) < recent.maxlen:
+            active = False                         # still filling the first window
+        else:
+            try:
+                window = np.concatenate(recent)
+                segs = get_speech_timestamps(window, vad_opts)
+                active = bool(segs) and segs[-1]["end"] >= len(window) - int(VAD_TAIL_SEC * SAMPLE_RATE)
+            except Exception as e:
+                print(f"  (voice detector failed, using loudness only: {e})")
+                vad_ok, active = False, True
+
+    if learn and not active:                       # learn the background only from non-speech
+        noise_floor += NOISE_ADAPT * (rms - noise_floor)
+
+    tail = np.concatenate(list(recent)[-6:])       # last ~0.3 s
+    level = float(np.sqrt(np.mean(tail ** 2)))
+    return active, level, noise_floor
+
+
 preroll = deque(maxlen=int(PREROLL_SEC / BLOCK_SEC))
 buffer = []
 speaking = False
@@ -379,7 +435,7 @@ def emit(words):
         utter_words.append(w)
 
 
-print("\nReady! Talk and I'll type live + drop meme sounds (Ctrl+C to stop).\n")
+print("\nReady! Talk and I'll type live + drop meme sounds.\n")
 try:
     with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
                         blocksize=int(SAMPLE_RATE * BLOCK_SEC), callback=callback):
@@ -388,15 +444,19 @@ try:
             while not q.empty():
                 blocks.append(q.get())
 
+            # judge every block: is someone talking (not just noise)?
+            playing = time.time() < mute_until
+            info = [(b,) + analyse(b, learn=not playing) for b in blocks]
+
             # a sound is playing: only listen for the user talking over it
-            if time.time() < mute_until:
+            if playing:
                 if time.time() - last_play < MIN_PLAY_SEC:
                     bargein_count = 0          # too early to interrupt
                     preroll.clear()
                     continue
                 trigger = None
-                for i, block in enumerate(blocks):
-                    if np.sqrt(np.mean(block ** 2)) > BARGE_IN_THRESHOLD:
+                for i, (block, active, level, floor) in enumerate(info):
+                    if active and level > max(BARGE_IN_THRESHOLD, floor * NOISE_MARGIN):
                         bargein_count += 1
                     else:
                         bargein_count = 0
@@ -412,13 +472,15 @@ try:
                 mute_until = 0.0
                 bargein_count = 0
                 preroll.clear()
-                blocks = blocks[max(0, trigger - BARGE_IN_BLOCKS + 1):]
+                info = info[max(0, trigger - BARGE_IN_BLOCKS + 1):]
                 print("  (sound stopped, listening...)")
 
-            for block in blocks:
-                loud = np.sqrt(np.mean(block ** 2)) > SPEECH_THRESHOLD
+            for block, active, level, floor in info:
+                loud = active and level > max(SPEECH_THRESHOLD, floor * NOISE_MARGIN)
                 if loud:
                     if not speaking:
+                        if SHOW_LEVELS:
+                            print(f"  [talking: level={level:.3f}  background={floor:.3f}]")
                         buffer.extend(preroll)
                         preroll.clear()
                     speaking, silent_blocks = True, 0
@@ -444,8 +506,10 @@ try:
                 print()
                 text = " ".join(utter_words).strip()
                 reset_utterance()
-                if text:
+                if text and len(text.split()) >= MIN_WORDS:
                     handle(text)
+                elif text:
+                    print(f"  -- skipped: fewer than {MIN_WORDS} words")
                 print()
             elif len(audio) > SAMPLE_RATE * 0.5 and time.time() - last_partial >= PARTIAL_EVERY_SEC:
                 hyp = get_words(audio, beam=1)
