@@ -57,9 +57,10 @@ MIN_AVG_LOGPROB = -1.0       # drop Whisper text it isn't confident about (-0.6 
 SHOW_LEVELS = False          # True: print your level vs the background, to help you tune
 
 DESCRIPTIONS = {
+    "six_seve": "six seven",
     # failure / bad news
     "say_wallahi_bro": "say walahi bro, see you later",
-    "noo_la_policia" : "six seven, brainrot, triple t, tung tung tung sahur",
+    "noo_la_policia" : "brainrot, triple t, tung tung tung sahur",
     "oof": "failure, bad news, getting hurt, bad grade, failing an exam, something going wrong",
     "sad_trombone": "a small fail, disappointment, plans falling apart, wah wah",
     "windows_error": "a mistake, something broke, a technical error, a bug or crash",
