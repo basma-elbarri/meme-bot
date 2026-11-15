@@ -22,14 +22,14 @@ except Exception:
 # ---------------- settings ----------------
 SAMPLE_RATE = 16000
 BLOCK_SEC = 0.05
-SPEECH_THRESHOLD = 0.1     # raise if noise triggers it, lower if it misses you
+SPEECH_THRESHOLD = 0.01     # raise if noise triggers it, lower if it misses you
 SILENCE_END_SEC = 0.8        # pause that ends a sentence
 PARTIAL_EVERY_SEC = 0.4      # how often live words are checked
 TRIM_AFTER_SEC = 8
 MAX_UTTERANCE_SEC = 60
 PREROLL_SEC = 0.6
-LANGUAGE = None             # "en", "fr", "ar", or None for auto
-MODEL_SIZE = "large-v3-turbo"   # use "medium" or "small" if d1 is slow / GPU is full
+LANGUAGE = "en"             # "en", "fr", "ar", or None for auto
+MODEL_SIZE = "tiny"   # use "medium" or "small" if d1 is slow / GPU is full
 PROMPT = "Casual conversation, slang, memes, school, exams."
 
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
