@@ -3,11 +3,7 @@ import os, site, glob, time, re
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
-for sp in site.getsitepackages():
-    for d in glob.glob(os.path.join(sp, "nvidia", "*", "bin")):
-        os.add_dll_directory(d)
-        os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
-
+# CPU-only setup: no NVIDIA/CUDA libraries are loaded on the pi-top.
 import queue
 from collections import deque
 import numpy as np
@@ -21,15 +17,17 @@ except Exception:
 
 # ---------------- settings ----------------
 SAMPLE_RATE = 16000
-BLOCK_SEC = 0.05
+BLOCK_SEC = 0.10             # larger blocks reduce callback/queue overhead
 SPEECH_THRESHOLD = 0.01     # raise if noise triggers it, lower if it misses you
-SILENCE_END_SEC = 0.8        # pause that ends a sentence
-PARTIAL_EVERY_SEC = 0.4      # how often live words are checked
+SILENCE_END_SEC = 1.0        # pause that ends a sentence
+PARTIAL_EVERY_SEC = 1.0      # fewer live transcription passes = much lower CPU use
 TRIM_AFTER_SEC = 8
 MAX_UTTERANCE_SEC = 60
-PREROLL_SEC = 0.6
+PREROLL_SEC = 0.4
 LANGUAGE = "en"             # "en", "fr", "ar", or None for auto
-MODEL_SIZE = "tiny"   # use "medium" or "small" if d1 is slow / GPU is full
+MODEL_SIZE = "tiny"            # Pi-top: "tiny" is fastest; try "base" for better accuracy
+CPU_THREADS = max(1, min(4, (os.cpu_count() or 2) - 1))
+
 PROMPT = "Casual conversation, slang, memes, school, exams."
 
 SFX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sfx")
@@ -47,7 +45,7 @@ BARGE_IN_BLOCKS = 4          # how many 50 ms blocks in a row (~0.2 s)
 MIN_PLAY_SEC = 2.0           # a sound always plays at least this long before you can interrupt it
 
 # --- loud-place settings: only react to someone actually talking ---
-USE_VAD = True               # voice detector (Silero): ignores music, crowd noise, machines
+USE_VAD = False              # Disable Silero VAD on Pi to save CPU; RMS/noise gate remains active
 VAD_THRESHOLD = 0.6          # 0-1. Raise (0.7-0.85) if noise still triggers it, lower if it misses you
 VAD_MIN_SPEECH_MS = 150      # a sound must look like speech for this long to count
 NOISE_MARGIN = 1.6           # you must be this many times louder than the background level
@@ -57,8 +55,8 @@ MIN_AVG_LOGPROB = -1.0       # drop Whisper text it isn't confident about (-0.6 
 SHOW_LEVELS = False          # True: print your level vs the background, to help you tune
 
 DESCRIPTIONS = {
-    "six_seve": "six seven",
     # failure / bad news
+    "six_seve": "six seven",
     "say_wallahi_bro": "say walahi bro, see you later",
     "noo_la_policia" : "brainrot, triple t, tung tung tung sahur",
     "oof": "failure, bad news, getting hurt, bad grade, failing an exam, something going wrong",
@@ -305,17 +303,18 @@ def handle(text):
 
 # ---------- whisper ----------
 def load_model():
-    print("Loading Whisper model on GPU...")
-    try:
-        m = WhisperModel(MODEL_SIZE, device="cuda", compute_type="float16")
-        list(m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)[0])
-        print("GPU works.")
-        return m
-    except Exception as e:
-        print(f"GPU failed ({e}). Falling back to CPU...")
-        m = WhisperModel(MODEL_SIZE, device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
-        list(m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)[0])
-        return m
+    print(f"Loading Whisper model on CPU ({MODEL_SIZE}, int8, {CPU_THREADS} threads)...")
+    m = WhisperModel(
+        MODEL_SIZE,
+        device="cpu",
+        compute_type="int8",
+        cpu_threads=CPU_THREADS,
+        num_workers=1,
+    )
+    # Warm up once so the first real transcription is less surprising.
+    list(m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), beam_size=1)[0])
+    print("CPU model ready.")
+    return m
 
 
 model = load_model()
@@ -338,6 +337,7 @@ def get_words(audio, beam):
         condition_on_previous_text=False,
         word_timestamps=True, initial_prompt=PROMPT,
         no_speech_threshold=0.6,
+        repetition_penalty=1.05,
     )
     words = []
     for s in segments:
@@ -363,11 +363,16 @@ def common_prefix_len(a, b):
 
 
 # ---------- main loop ----------
-q = queue.Queue()
+q = queue.Queue(maxsize=30)
 
 
 def callback(indata, frames, time_info, status):
-    q.put(indata[:, 0].copy())
+    # Keep latency bounded if CPU transcription temporarily falls behind.
+    block = indata[:, 0].copy()
+    try:
+        q.put_nowait(block)
+    except queue.Full:
+        pass
 
 
 # ---------- "is someone talking?" (ignores noise in loud places) ----------
@@ -502,7 +507,7 @@ try:
 
             if ended:
                 if len(audio) > SAMPLE_RATE * 0.3:
-                    words = get_words(audio, beam=5)      # accurate final pass
+                    words = get_words(audio, beam=1)      # beam 1 is much faster on a small CPU
                     emit(words[n_printed:])
                 print()
                 text = " ".join(utter_words).strip()
