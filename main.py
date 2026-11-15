@@ -246,7 +246,7 @@ criteria = {n: DESCRIPTIONS.get(n, n.replace("_", " ")) for n in sfx}
 # ---------- d1 ----------
 def pick_sfx(text):
     payload = {
-        "model": "d1",
+        "model": "d1-omni:600m",
         "state": text,
         "keep_alive": "60m",
         "questions": {
